@@ -738,6 +738,14 @@ function buildInstructions({
     selectedPet,
     intent
   });
+  const petDescriptionActionBlock = buildPetDescriptionActionBlock({
+    selectedPet,
+    intent
+  });
+  const deviceActionBlock = buildDeviceActionBlock({
+    selectedDevice,
+    intent
+  });
   const focusDeviceBlock = selectedDevice
     ? `Dispositivo principal para este turno: ${selectedDevice.customName}.`
     : null;
@@ -752,6 +760,8 @@ function buildInstructions({
     selectedPetResolvedBlock,
     selectedPetImageBlock,
     routineActionBlock,
+    petDescriptionActionBlock,
+    deviceActionBlock,
     focusDeviceBlock,
     ambiguityNote,
     deviceAmbiguityNote,
@@ -917,7 +927,17 @@ function analyzeMessageIntent(currentMessage) {
       ),
     wantsCreateRoutineAction:
       /\b(crea|crear|agrega|agregar|programa|programar|haz|hacer)\b/.test(normalized) &&
-      /\b(rutina|recordatorio|alarma)\b/.test(normalized)
+      /\b(rutina|recordatorio|alarma)\b/.test(normalized),
+    wantsSavePetInfoAction:
+      /\b(guarda|guardar|agrega|agregar|anade|añade|actualiza|actualizar|anota|deja)\b/.test(normalized) &&
+      /\b(descripcion|descripción|perfil|info|informacion|información|nota|notas)\b/.test(normalized),
+    wantsRenameDeviceAction:
+      /\b(cambia|cambiar|renombra|renombrar|ponle|ponerle)\b/.test(normalized) &&
+      /\b(nombre)\b/.test(normalized) &&
+      /\b(dispositivo|comedero|bebedero|arenero)\b/.test(normalized),
+    wantsWaterCirculationAction:
+      /\b(circulacion|circulación)\b/.test(normalized) &&
+      /\b(activa|activar|enciende|encender|desactiva|desactivar|apaga|apagar)\b/.test(normalized)
   };
 }
 
@@ -942,6 +962,41 @@ function buildRoutineActionBlock({ pets, selectedPet, intent }) {
     "Si falta un dato critico para crear la rutina bien, no generes el bloque. Haz solo una pregunta corta.",
     petGuidance
   ].join("\n");
+}
+
+function buildPetDescriptionActionBlock({ selectedPet, intent }) {
+  if (!intent.wantsSavePetInfoAction || !selectedPet) return null;
+
+  return [
+    "Si el usuario quiere guardar una informacion importante dentro de la mascota y ya sabes a cual mascota se refiere, puedes emitir una accion para agregarla a su descripcion.",
+    "Primero responde normal y luego agrega exactamente este formato en una linea aparte:",
+    `<domoticpet_action>{"id":"pet_note_x","type":"update_pet_description","executed":false,"petDescription":{"petId":${selectedPet.id ?? "null"},"petName":"${selectedPet.name}","appendText":"Texto breve para guardar en la descripcion"}}</domoticpet_action>`,
+    "appendText debe ser breve, claro y util para recordar despues.",
+    "Solo genera esta accion si el usuario claramente quiere que esa informacion quede guardada en la app."
+  ].join("\n");
+}
+
+function buildDeviceActionBlock({ selectedDevice, intent }) {
+  if (!selectedDevice) return null;
+
+  const blocks = [];
+
+  if (intent.wantsRenameDeviceAction) {
+    blocks.push([
+      "Si el usuario quiere cambiar el nombre de un dispositivo y el dispositivo ya esta resuelto, puedes emitir esta accion:",
+      `<domoticpet_action>{"id":"device_rename_x","type":"rename_device","executed":false,"renameDevice":{"deviceId":${selectedDevice.id},"deviceName":"${selectedDevice.customName}","newName":"Nuevo nombre"}}</domoticpet_action>`
+    ].join("\n"));
+  }
+
+  if (intent.wantsWaterCirculationAction && selectedDevice.type === "WaterFountain") {
+    blocks.push([
+      "Si el usuario quiere activar o desactivar la circulacion del bebedero, puedes emitir esta accion:",
+      `<domoticpet_action>{"id":"water_circulation_x","type":"set_water_circulation","executed":false,"waterCirculation":{"deviceId":${selectedDevice.id},"deviceName":"${selectedDevice.customName}","enabled":true}}</domoticpet_action>`,
+      "Usa enabled=true para activar y enabled=false para desactivar."
+    ].join("\n"));
+  }
+
+  return blocks.length ? blocks.join("\n\n") : null;
 }
 
 function buildContextAvailabilityBlock({

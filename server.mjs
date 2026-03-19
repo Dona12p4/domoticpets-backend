@@ -21,7 +21,7 @@ const app = express();
 
 app.disable("x-powered-by");
 app.use(cors());
-app.use(express.json({ limit: "2mb" }));
+app.use(express.json({ limit: "6mb" }));
 
 app.use((error, _req, res, next) => {
   if (error instanceof SyntaxError && "body" in error) {
@@ -145,6 +145,7 @@ async function buildResponsesPayload(body, stream) {
   const recentNotifications = normalizeRecentNotifications(body?.recentNotifications);
   const selectedPetId = normalizeOptionalNumber(body?.selectedPetId);
   const selectedPetName = optionalText(body?.selectedPetName);
+  const selectedPetImage = normalizeSelectedPetImage(body?.selectedPetImage);
 
   return {
     model,
@@ -160,17 +161,32 @@ async function buildResponsesPayload(body, stream) {
       notificationSettings,
       recentNotifications,
       selectedPetId,
-      selectedPetName
+      selectedPetName,
+      selectedPetImage
     }),
     ...(previousResponseId ? { previous_response_id: previousResponseId } : {}),
     input: [
       ...(!previousResponseId ? history : []),
       {
         role: "user",
-        content: [{ type: "input_text", text: message }]
+        content: buildUserInputContent(message, selectedPetImage)
       }
     ]
   };
+}
+
+function buildUserInputContent(message, selectedPetImage) {
+  const content = [{ type: "input_text", text: message }];
+
+  if (selectedPetImage) {
+    content.push({
+      type: "input_image",
+      image_url: selectedPetImage.dataUrl,
+      detail: selectedPetImage.detail
+    });
+  }
+
+  return content;
 }
 
 function normalizeHistory(history) {
@@ -242,6 +258,26 @@ function normalizePets(pets) {
       };
     })
     .filter(Boolean);
+}
+
+function normalizeSelectedPetImage(image) {
+  if (!image || typeof image !== "object") return null;
+
+  const dataUrl = optionalText(image?.dataUrl);
+  if (!dataUrl || !/^data:image\/[a-zA-Z0-9.+-]+;base64,/.test(dataUrl)) {
+    return null;
+  }
+
+  const detail = ["low", "high", "auto"].includes(optionalText(image?.detail))
+    ? optionalText(image?.detail)
+    : "high";
+
+  return {
+    petId: normalizeOptionalNumber(image?.petId),
+    petName: optionalText(image?.petName),
+    dataUrl,
+    detail
+  };
 }
 
 function normalizeRoutines(routines, pets) {
@@ -613,7 +649,8 @@ function buildInstructions({
   notificationSettings,
   recentNotifications,
   selectedPetId,
-  selectedPetName
+  selectedPetName,
+  selectedPetImage
 }) {
   const intent = analyzeMessageIntent(currentMessage);
   const selectedPet = resolveSelectedPet({
@@ -688,6 +725,12 @@ function buildInstructions({
     : null;
   const selectedPetResolvedBlock = buildSelectedPetResolvedBlock({
     selectedPet,
+    intent,
+    selectedPetImage
+  });
+  const selectedPetImageBlock = buildSelectedPetImageBlock({
+    selectedPet,
+    selectedPetImage,
     intent
   });
   const focusDeviceBlock = selectedDevice
@@ -702,6 +745,7 @@ function buildInstructions({
     appCapabilitiesBlock,
     focusBlock,
     selectedPetResolvedBlock,
+    selectedPetImageBlock,
     focusDeviceBlock,
     ambiguityNote,
     deviceAmbiguityNote,
@@ -759,7 +803,7 @@ function resolveSelectedPet({ pets, selectedPetId, selectedPetName, currentMessa
   return mentionedPets.length === 1 ? mentionedPets[0] : null;
 }
 
-function buildSelectedPetResolvedBlock({ selectedPet, intent }) {
+function buildSelectedPetResolvedBlock({ selectedPet, intent, selectedPetImage }) {
   if (!selectedPet) return null;
 
   const petType = optionalText(selectedPet.typeLabel) || optionalText(selectedPet.type) || optionalText(selectedPet.customType);
@@ -770,6 +814,7 @@ function buildSelectedPetResolvedBlock({ selectedPet, intent }) {
     optionalText(selectedPet.ageLabel) ? `Edad disponible de esa mascota: ${selectedPet.ageLabel}.` : null,
     optionalText(selectedPet.weightLabel) ? `Peso disponible de esa mascota: ${selectedPet.weightLabel}.` : null,
     inferredLifeStage ? `Etapa de vida inferida de esa mascota: ${inferredLifeStage}.` : null,
+    selectedPetImage ? "Hay una foto real adjunta de esta mascota en este turno." : null,
     "Usa esta mascota como referencia principal en toda la respuesta.",
     "No vuelvas a preguntar si es perro o gato si ese dato ya aparece aqui.",
     "Antes de preguntar algo sobre esta mascota, revisa si el dato ya aparece arriba o si puede inferirse con lo que ya esta guardado.",
@@ -778,6 +823,19 @@ function buildSelectedPetResolvedBlock({ selectedPet, intent }) {
   ];
 
   return lines.filter(Boolean).join("\n");
+}
+
+function buildSelectedPetImageBlock({ selectedPet, selectedPetImage, intent }) {
+  if (!selectedPetImage || !intent.wantsVisualAnalysis) return null;
+
+  const petName = selectedPetImage.petName || selectedPet?.name || "la mascota relevante";
+  return [
+    `Imagen real adjunta para este turno: corresponde a ${petName}.`,
+    "Puedes usar la imagen para analizar rasgos visibles si ayudan a responder.",
+    "Si te piden la raza a partir de la foto, responde como una estimacion prudente y no como una certeza absoluta.",
+    "Si la foto no permite identificar bien la raza, dilo con honestidad y sugiere que probablemente sea mestizo o mezcla cuando aplique.",
+    "No digas que no puedes ver la foto si esta imagen fue adjunta en este turno."
+  ].join("\n");
 }
 
 function resolveSelectedDevice({ devices, currentMessage }) {
@@ -845,6 +903,10 @@ function analyzeMessageIntent(currentMessage) {
       ),
     wantsCapabilities:
       /\b(camara|camaras|camara de seguridad|vision|video|videos|grabar|graba|vigilar|vigilancia|funcion|funciones|que hace la app|que puede hacer|que hace domoticpet|que puede hacer domoticpet|compatibilidad|compatible|modulo|modulos|que informacion|que datos|puedes ver la app|informacion de la app|datos de la app)\b/.test(
+        normalized
+      ),
+    wantsVisualAnalysis:
+      /\b(raza|breed|foto|fotos|imagen|imagenes|revisa la foto|revisar la foto|mira la foto|mirar la foto|ves en la foto|que ves|como se ve|pelaje|color|parece)\b/.test(
         normalized
       )
   };

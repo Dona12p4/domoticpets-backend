@@ -29,7 +29,10 @@ Variable opcional:
 
 ```env
 OPENAI_MODEL=gpt-5-mini
+FIREBASE_RTDB_BASE_URL=https://domoticpets-default-rtdb.firebaseio.com
 ```
+
+`FIREBASE_RTDB_BASE_URL` permite que el backend complemente el contexto del chat con el ultimo estado disponible de `bebedero`, `comedero` y `arenero` directamente desde Firebase.
 
 ## Instalar dependencias
 
@@ -56,11 +59,23 @@ npm start
 
 ## Endpoints
 
+- `GET /`
 - `GET /health`
 - `POST /chat`
 - `POST /chat/stream`
 
 `/chat/stream` devuelve NDJSON para que Android pueda ir pintando la respuesta progresivamente.
+
+Si el backend esta desplegado en Render con la URL publica:
+
+`https://domoticpets-backend.onrender.com`
+
+entonces los endpoints finales quedan asi:
+
+- `https://domoticpets-backend.onrender.com/`
+- `https://domoticpets-backend.onrender.com/health`
+- `https://domoticpets-backend.onrender.com/chat`
+- `https://domoticpets-backend.onrender.com/chat/stream`
 
 ## Request esperado en /chat
 
@@ -98,9 +113,30 @@ npm start
 }
 ```
 
+## Response esperado en /chat
+
+```json
+{
+  "reply": "Respuesta real del asistente",
+  "responseId": "resp_abc123",
+  "model": "gpt-5-mini"
+}
+```
+
+## Android
+
+La app debe enviar el request al endpoint publico:
+
+`https://domoticpets-backend.onrender.com/chat`
+
+Y para streaming:
+
+`https://domoticpets-backend.onrender.com/chat/stream`
+
 ## Notas
 
 - La API key solo se lee desde `process.env.OPENAI_API_KEY`
 - No se guarda en Kotlin, `strings.xml` ni `BuildConfig`
-- La app Android en desarrollo apunta por defecto a `http://10.0.2.2:3000`
-- Si usas un telefono fisico, cambia la URL del backend en `gradle.properties`
+- Render necesita escuchar en `process.env.PORT || 3000`
+- El servidor escucha en `0.0.0.0`
+- La app Android puede apuntar a Render, emulador o WiFi local segun `gradle.properties`

@@ -13,12 +13,31 @@ if (!apiKey) {
 
 const model = process.env.OPENAI_MODEL || "gpt-5-mini";
 const port = Number(process.env.PORT || 3000);
+const host = "0.0.0.0";
+const realtimeDbBaseUrl = optionalText(process.env.FIREBASE_RTDB_BASE_URL);
 
 const openai = new OpenAI({ apiKey });
 const app = express();
 
+app.disable("x-powered-by");
 app.use(cors());
 app.use(express.json({ limit: "2mb" }));
+
+app.use((error, _req, res, next) => {
+  if (error instanceof SyntaxError && "body" in error) {
+    res.status(400).json({
+      error: "invalid_json",
+      message: "El cuerpo JSON no es valido."
+    });
+    return;
+  }
+
+  next(error);
+});
+
+app.get("/", (_req, res) => {
+  res.status(200).send("Backend DomoticPets activo");
+});
 
 app.get("/health", (_req, res) => {
   res.json({
@@ -43,7 +62,7 @@ app.post("/chat", async (req, res) => {
     }
 
     const response = await openai.responses.create(
-      buildResponsesPayload(req.body, false)
+      await buildResponsesPayload(req.body, false)
     );
 
     res.json({
@@ -52,7 +71,7 @@ app.post("/chat", async (req, res) => {
       model
     });
   } catch (error) {
-    sendHttpError(res, error);
+    sendHttpError(res, error, "/chat");
   }
 });
 
@@ -85,7 +104,7 @@ app.post("/chat/stream", async (req, res) => {
     }
 
     const stream = await openai.responses.create(
-      buildResponsesPayload(req.body, true)
+      await buildResponsesPayload(req.body, true)
     );
 
     for await (const event of stream) {
@@ -116,39 +135,43 @@ app.post("/chat/stream", async (req, res) => {
       if (event.type === "response.failed") {
         writeEvent(res, {
           type: "error",
-          message:
-            event.response?.error?.message ||
-            "OpenAI no pudo completar la respuesta."
+          message: getClientSafeErrorMessage(event.response?.error)
         });
       }
 
       if (event.type === "error") {
         writeEvent(res, {
           type: "error",
-          message: event.error?.message || "Error durante el streaming."
+          message: getClientSafeErrorMessage(event.error)
         });
       }
     }
   } catch (error) {
+    logServerError(error, "/chat/stream");
     writeEvent(res, {
       type: "error",
-      message: getErrorMessage(error)
+      message: getClientSafeErrorMessage(error)
     });
   } finally {
     res.end();
   }
 });
 
-app.listen(port, () => {
-  console.log(`DomoticPet chat backend listening on http://localhost:${port}`);
+app.listen(port, host, () => {
+  console.log(`DomoticPet chat backend listening on http://${host}:${port}`);
 });
 
-function buildResponsesPayload(body, stream) {
+async function buildResponsesPayload(body, stream) {
   const message = requireText(body?.message, "message");
   const previousResponseId = optionalText(body?.previousResponseId);
   const history = normalizeHistory(body?.history);
   const pets = normalizePets(body?.pets);
   const routines = normalizeRoutines(body?.routines, pets);
+  const devices = await enrichDevicesWithRealtimeState(normalizeDevices(body?.devices));
+  const userProfile = normalizeUserProfile(body?.userProfile);
+  const appStats = normalizeAppStats(body?.appStats);
+  const notificationSettings = normalizeNotificationSettings(body?.notificationSettings);
+  const recentNotifications = normalizeRecentNotifications(body?.recentNotifications);
   const selectedPetId = normalizeOptionalNumber(body?.selectedPetId);
   const selectedPetName = optionalText(body?.selectedPetName);
 
@@ -160,6 +183,11 @@ function buildResponsesPayload(body, stream) {
       currentMessage: message,
       pets,
       routines,
+      devices,
+      userProfile,
+      appStats,
+      notificationSettings,
+      recentNotifications,
       selectedPetId,
       selectedPetName
     }),
@@ -209,6 +237,7 @@ function normalizePets(pets) {
       return {
         id,
         name,
+        hasPhoto: Boolean(pet?.hasPhoto),
         type: optionalText(pet?.type),
         typeLabel: optionalText(pet?.typeLabel),
         customType: optionalText(pet?.customType),
@@ -282,7 +311,339 @@ function normalizeRoutines(routines, pets) {
     .filter(Boolean);
 }
 
-function buildInstructions({ currentMessage, pets, routines, selectedPetId, selectedPetName }) {
+function normalizeDevices(devices) {
+  if (!Array.isArray(devices)) return [];
+
+  return devices
+    .map((device) => {
+      const id = normalizeOptionalNumber(device?.id);
+      const customName = optionalText(device?.customName);
+      const type = optionalText(device?.type);
+      const typeLabel = optionalText(device?.typeLabel);
+      if (id === null || !customName || !type || !typeLabel) return null;
+
+      return {
+        id,
+        customName,
+        type,
+        typeLabel,
+        bluetoothName: optionalText(device?.bluetoothName),
+        wifiSsid: optionalText(device?.wifiSsid),
+        ipAddress: optionalText(device?.ipAddress),
+        isOnline: Boolean(device?.isOnline),
+        levelPercent: normalizeOptionalNumber(device?.levelPercent),
+        levelStatusLabel: optionalText(device?.levelStatusLabel),
+        currentStatusLabel: optionalText(device?.currentStatusLabel),
+        alertState: optionalText(device?.alertState),
+        feederMode: optionalText(device?.feederMode),
+        feederConstantGrams: normalizeOptionalNumber(device?.feederConstantGrams),
+        feederLastPortionGrams: normalizeOptionalNumber(device?.feederLastPortionGrams),
+        nextFeedingLabel: optionalText(device?.nextFeedingLabel),
+        waterCirculationActive:
+          typeof device?.waterCirculationActive === "boolean"
+            ? device.waterCirculationActive
+            : null,
+        waterLastChangeLabel: optionalText(device?.waterLastChangeLabel),
+        waterLastRefillLabel: optionalText(device?.waterLastRefillLabel),
+        litterMode: optionalText(device?.litterMode),
+        litterDelayMinutes: normalizeOptionalNumber(device?.litterDelayMinutes),
+        litterLastCleaningLabel: optionalText(device?.litterLastCleaningLabel),
+        litterLastUsageLabel: optionalText(device?.litterLastUsageLabel),
+        schedules: normalizeDeviceSchedules(device?.schedules),
+        recentHistory: normalizeDeviceHistory(device?.recentHistory)
+      };
+    })
+    .filter(Boolean);
+}
+
+async function enrichDevicesWithRealtimeState(devices) {
+  if (!Array.isArray(devices) || !devices.length || !realtimeDbBaseUrl) {
+    return devices;
+  }
+
+  const typeCounts = devices.reduce((counts, device) => {
+    counts[device.type] = (counts[device.type] || 0) + 1;
+    return counts;
+  }, {});
+
+  const [feederState, waterState, litterState] = await Promise.all([
+    typeCounts.Feeder === 1 ? fetchRealtimeNode("comedero") : Promise.resolve(null),
+    typeCounts.WaterFountain === 1 ? fetchRealtimeNode("bebedero") : Promise.resolve(null),
+    typeCounts.LitterBox === 1 ? fetchRealtimeNode("arenero") : Promise.resolve(null)
+  ]);
+
+  return devices.map((device) => {
+    switch (device.type) {
+      case "Feeder":
+        return mergeRealtimeFeederState(device, feederState);
+      case "WaterFountain":
+        return mergeRealtimeWaterState(device, waterState);
+      case "LitterBox":
+        return mergeRealtimeLitterState(device, litterState);
+      default:
+        return device;
+    }
+  });
+}
+
+async function fetchRealtimeNode(nodeName) {
+  try {
+    const response = await fetch(`${realtimeDbBaseUrl.replace(/\/$/, "")}/dispositivos/${nodeName}.json`);
+    if (!response.ok) {
+      return null;
+    }
+
+    const payload = await response.json();
+    if (!payload || typeof payload !== "object") {
+      return null;
+    }
+
+    return payload;
+  } catch {
+    return null;
+  }
+}
+
+function mergeRealtimeFeederState(device, payload) {
+  if (!payload || typeof payload !== "object") return device;
+
+  const effectiveOnline = resolveRealtimeOnline(
+    payload.online,
+    payload.updated_at_ms
+  );
+  const levelPercent = normalizeOptionalNumber(payload.nivel_comida);
+
+  return {
+    ...device,
+    wifiSsid: optionalText(payload.wifi_ssid) || device.wifiSsid,
+    ipAddress: effectiveOnline
+      ? optionalText(payload.ip) || device.ipAddress
+      : device.ipAddress,
+    isOnline: effectiveOnline,
+    levelPercent: levelPercent !== null ? clampPercent(levelPercent) : device.levelPercent,
+    levelStatusLabel:
+      levelPercent !== null ? buildLevelStatusLabel(clampPercent(levelPercent)) : device.levelStatusLabel,
+    alertState:
+      levelPercent !== null ? buildAlertStateLabel(clampPercent(levelPercent)) : device.alertState
+  };
+}
+
+function mergeRealtimeWaterState(device, payload) {
+  if (!payload || typeof payload !== "object") return device;
+
+  const effectiveOnline = resolveRealtimeOnline(
+    payload.online,
+    payload.updated_at_ms
+  );
+  const levelPercent = normalizeOptionalNumber(payload.nivel_agua);
+  const circulationActive =
+    typeof payload.circulacion_activa === "boolean"
+      ? payload.circulacion_activa
+      : device.waterCirculationActive;
+
+  return {
+    ...device,
+    wifiSsid: optionalText(payload.wifi_ssid) || device.wifiSsid,
+    ipAddress: effectiveOnline
+      ? optionalText(payload.ip) || device.ipAddress
+      : device.ipAddress,
+    isOnline: effectiveOnline,
+    levelPercent: levelPercent !== null ? clampPercent(levelPercent) : device.levelPercent,
+    levelStatusLabel:
+      levelPercent !== null ? buildLevelStatusLabel(clampPercent(levelPercent)) : device.levelStatusLabel,
+    currentStatusLabel:
+      typeof circulationActive === "boolean"
+        ? circulationActive
+          ? "Circulacion activa"
+          : "Circulacion inactiva"
+        : device.currentStatusLabel,
+    alertState:
+      levelPercent !== null ? buildAlertStateLabel(clampPercent(levelPercent)) : device.alertState,
+    waterCirculationActive: circulationActive
+  };
+}
+
+function mergeRealtimeLitterState(device, payload) {
+  if (!payload || typeof payload !== "object") return device;
+
+  const effectiveOnline = resolveRealtimeOnline(
+    payload.online,
+    payload.updated_at_ms
+  );
+  const levelPercent = normalizeOptionalNumber(payload.nivel_arena);
+  const catDetected =
+    typeof payload.deteccion_gato === "boolean"
+      ? payload.deteccion_gato
+      : null;
+
+  return {
+    ...device,
+    wifiSsid: optionalText(payload.wifi_ssid) || device.wifiSsid,
+    ipAddress: effectiveOnline
+      ? optionalText(payload.ip) || device.ipAddress
+      : device.ipAddress,
+    isOnline: effectiveOnline,
+    levelPercent: levelPercent !== null ? clampPercent(levelPercent) : device.levelPercent,
+    levelStatusLabel:
+      levelPercent !== null ? buildLevelStatusLabel(clampPercent(levelPercent)) : device.levelStatusLabel,
+    currentStatusLabel:
+      typeof catDetected === "boolean"
+        ? catDetected
+          ? "En uso"
+          : "Libre"
+        : device.currentStatusLabel,
+    alertState:
+      levelPercent !== null ? buildAlertStateLabel(clampPercent(levelPercent)) : device.alertState
+  };
+}
+
+function resolveRealtimeOnline(remoteOnline, updatedAtMillis) {
+  if (!remoteOnline) return false;
+
+  const updatedAt = normalizeOptionalNumber(updatedAtMillis);
+  if (updatedAt === null) return Boolean(remoteOnline);
+
+  return Date.now() - updatedAt <= 8_000;
+}
+
+function clampPercent(value) {
+  return Math.max(0, Math.min(100, Math.round(value)));
+}
+
+function buildLevelStatusLabel(levelPercent) {
+  if (levelPercent <= 10) return "Critico";
+  if (levelPercent <= 30) return "Bajo";
+  return "Optimo";
+}
+
+function buildAlertStateLabel(levelPercent) {
+  if (levelPercent <= 10) return "Critico";
+  if (levelPercent <= 30) return "Bajo";
+  return null;
+}
+
+function normalizeDeviceSchedules(schedules) {
+  if (!Array.isArray(schedules)) return [];
+
+  return schedules
+    .map((schedule) => {
+      const label = optionalText(schedule?.label);
+      if (!label) return null;
+
+      return {
+        label,
+        detail: optionalText(schedule?.detail),
+        enabled:
+          typeof schedule?.enabled === "boolean"
+            ? schedule.enabled
+            : null
+      };
+    })
+    .filter(Boolean)
+    .slice(0, 8);
+}
+
+function normalizeDeviceHistory(history) {
+  if (!Array.isArray(history)) return [];
+
+  return history
+    .map((entry) => {
+      const title = optionalText(entry?.title);
+      const value = optionalText(entry?.value);
+      if (!title || !value) return null;
+
+      return {
+        title,
+        value,
+        createdAtLabel: optionalText(entry?.createdAtLabel)
+      };
+    })
+    .filter(Boolean)
+    .slice(0, 6);
+}
+
+function normalizeUserProfile(profile) {
+  const fullName = optionalText(profile?.fullName);
+  if (!fullName) return null;
+
+  return {
+    fullName,
+    location: optionalText(profile?.location),
+    memberSince: optionalText(profile?.memberSince),
+    planName: optionalText(profile?.planName)
+  };
+}
+
+function normalizeAppStats(stats) {
+  if (!stats || typeof stats !== "object") return null;
+
+  return {
+    totalPets: normalizeOptionalNumber(stats?.totalPets) ?? 0,
+    totalDevices: normalizeOptionalNumber(stats?.totalDevices) ?? 0,
+    totalRoutines: normalizeOptionalNumber(stats?.totalRoutines) ?? 0,
+    unreadNotifications: normalizeOptionalNumber(stats?.unreadNotifications) ?? 0,
+    onlineDevices: normalizeOptionalNumber(stats?.onlineDevices) ?? 0,
+    offlineDevices: normalizeOptionalNumber(stats?.offlineDevices) ?? 0,
+    lowLevelDevices: normalizeOptionalNumber(stats?.lowLevelDevices) ?? 0,
+    criticalLevelDevices: normalizeOptionalNumber(stats?.criticalLevelDevices) ?? 0,
+    feederDevices: normalizeOptionalNumber(stats?.feederDevices) ?? 0,
+    waterFountainDevices: normalizeOptionalNumber(stats?.waterFountainDevices) ?? 0,
+    litterBoxDevices: normalizeOptionalNumber(stats?.litterBoxDevices) ?? 0
+  };
+}
+
+function normalizeNotificationSettings(settings) {
+  if (!settings || typeof settings !== "object") return null;
+
+  return {
+    allNotificationsEnabled: Boolean(settings?.allNotificationsEnabled),
+    soundEnabled: Boolean(settings?.soundEnabled),
+    feederMealServedEnabled: Boolean(settings?.feederMealServedEnabled),
+    feederLowFoodEnabled: Boolean(settings?.feederLowFoodEnabled),
+    feederFoodEmptyEnabled: Boolean(settings?.feederFoodEmptyEnabled),
+    waterFreshEnabled: Boolean(settings?.waterFreshEnabled),
+    waterLowEnabled: Boolean(settings?.waterLowEnabled),
+    waterEmptyEnabled: Boolean(settings?.waterEmptyEnabled),
+    litterCatDetectedEnabled: Boolean(settings?.litterCatDetectedEnabled),
+    litterCleaningCompleteEnabled: Boolean(settings?.litterCleaningCompleteEnabled),
+    litterLowLevelEnabled: Boolean(settings?.litterLowLevelEnabled),
+    litterReminderEnabled: Boolean(settings?.litterReminderEnabled)
+  };
+}
+
+function normalizeRecentNotifications(notifications) {
+  if (!Array.isArray(notifications)) return [];
+
+  return notifications
+    .map((notification) => {
+      const title = optionalText(notification?.title);
+      const body = optionalText(notification?.body);
+      if (!title || !body) return null;
+
+      return {
+        title,
+        body,
+        deviceType: optionalText(notification?.deviceType),
+        isRead: Boolean(notification?.isRead),
+        createdAtLabel: optionalText(notification?.createdAtLabel)
+      };
+    })
+    .filter(Boolean)
+    .slice(0, 10);
+}
+
+function buildInstructions({
+  currentMessage,
+  pets,
+  routines,
+  devices,
+  userProfile,
+  appStats,
+  notificationSettings,
+  recentNotifications,
+  selectedPetId,
+  selectedPetName
+}) {
   const intent = analyzeMessageIntent(currentMessage);
   const selectedPet = resolveSelectedPet({
     pets,
@@ -290,9 +651,18 @@ function buildInstructions({ currentMessage, pets, routines, selectedPetId, sele
     selectedPetName,
     currentMessage
   });
+  const selectedDevice = resolveSelectedDevice({
+    devices,
+    currentMessage
+  });
   const ambiguityNote = buildAmbiguityNote({
     pets,
     selectedPet,
+    currentMessage
+  });
+  const deviceAmbiguityNote = buildDeviceAmbiguityNote({
+    devices,
+    selectedDevice,
     currentMessage
   });
 
@@ -307,26 +677,79 @@ function buildInstructions({ currentMessage, pets, routines, selectedPetId, sele
     selectedPet,
     intent
   });
+  const devicesBlock = buildRelevantDevicesBlock({
+    devices,
+    selectedDevice,
+    intent
+  });
+  const appCapabilitiesBlock = buildAppCapabilitiesBlock({
+    appStats,
+    devices,
+    intent
+  });
+  const statsBlock = buildStatsBlock({
+    appStats,
+    intent
+  });
+  const userProfileBlock = buildUserProfileBlock({
+    userProfile,
+    intent
+  });
+  const notificationSettingsBlock = buildNotificationSettingsBlock({
+    notificationSettings,
+    intent
+  });
+  const recentNotificationsBlock = buildRecentNotificationsBlock({
+    recentNotifications,
+    intent
+  });
+  const contextAvailabilityBlock = buildContextAvailabilityBlock({
+    pets,
+    routines,
+    devices,
+    userProfile,
+    recentNotifications,
+    intent
+  });
 
   const focusBlock = selectedPet
     ? `Mascota principal para este turno: ${selectedPet.name}.`
+    : null;
+  const focusDeviceBlock = selectedDevice
+    ? `Dispositivo principal para este turno: ${selectedDevice.customName}.`
     : null;
 
   return [
     systemPrompt,
     "",
     "Contexto real para este turno:",
+    contextAvailabilityBlock,
+    appCapabilitiesBlock,
     focusBlock,
+    focusDeviceBlock,
     ambiguityNote,
+    deviceAmbiguityNote,
+    statsBlock,
+    userProfileBlock,
     petsBlock,
     routinesBlock,
+    devicesBlock,
+    notificationSettingsBlock,
+    recentNotificationsBlock,
     "Lo que aparece aqui ya esta guardado en la app.",
+    "Si arriba aparecen mascotas, rutinas, dispositivos, perfil o notificaciones, no respondas que no puedes ver la informacion de la app.",
+    intent.wantsSummary || intent.wantsCapabilities || intent.wantsAccount
+      ? "Si el usuario pregunta que informacion de la app conoces o puedes revisar, responde con un resumen corto de lo que si esta disponible en este turno."
+      : null,
     "Usa este contexto como memoria silenciosa y no como texto para repetir.",
-    "No cites etiquetas, campos, nombres, rutinas ni horarios salvo que el usuario lo pida de forma explicita.",
+    "No cites etiquetas, campos, nombres, rutinas, horarios, porcentajes, estados ni redes WiFi salvo que el usuario lo pida de forma explicita.",
     "No pidas confirmar datos que ya aparecen aqui.",
     intent.wantsRoutine
       ? "El usuario si esta preguntando por rutinas, asi que puedes usarlas si ayudan."
       : "No menciones rutinas en la respuesta salvo que el usuario las pida.",
+    intent.wantsDeviceStatus || intent.wantsStats || intent.wantsNotifications || intent.wantsCapabilities
+      ? "El usuario si esta preguntando por dispositivos, estados, stats o notificaciones, asi que puedes usar ese contexto si ayuda."
+      : "No menciones dispositivos, niveles, notificaciones ni estados salvo que el usuario lo pida.",
     "No menciones inconsistencias ni datos extranos salvo que el usuario pida revisar la informacion.",
     intent.wantsFood ? buildFoodInstruction(selectedPet) : null,
     intent.isGreetingOnly ? buildGreetingInstruction() : null,
@@ -360,6 +783,25 @@ function resolveSelectedPet({ pets, selectedPetId, selectedPetName, currentMessa
   return mentionedPets.length === 1 ? mentionedPets[0] : null;
 }
 
+function resolveSelectedDevice({ devices, currentMessage }) {
+  if (!Array.isArray(devices) || !devices.length) return null;
+
+  const normalizedMessage = normalizeName(currentMessage);
+
+  const byName = devices.filter((device) =>
+    normalizedMessage.includes(normalizeName(device.customName))
+  );
+  if (byName.length === 1) return byName[0];
+
+  const typeMatches = devices.filter((device) => {
+    const normalizedType = normalizeName(device.typeLabel);
+    return normalizedType && normalizedMessage.includes(normalizedType);
+  });
+  if (typeMatches.length === 1) return typeMatches[0];
+
+  return devices.length === 1 ? devices[0] : null;
+}
+
 function analyzeMessageIntent(currentMessage) {
   const normalized = normalizeName(currentMessage);
 
@@ -387,8 +829,56 @@ function analyzeMessageIntent(currentMessage) {
     wantsHygiene:
       /\b(higiene|bano|bano|cepillado|cepillar|pelaje|unas|limpiar)\b/.test(
         normalized
+      ),
+    wantsDeviceStatus:
+      /\b(dispositivo|dispositivos|comedero|bebedero|arenero|wifi|bluetooth|nivel|porcentaje|estado|en linea|sin conexion|circulacion|limpieza|recarga|servida|servido|agua|arena)\b/.test(
+        normalized
+      ),
+    wantsNotifications:
+      /\b(notificacion|notificaciones|campana|alerta|alertas|aviso|avisos|recordatorio|recordatorios)\b/.test(
+        normalized
+      ),
+    wantsAccount:
+      /\b(perfil|cuenta|plan|nombre|ubicacion|miembro desde|informacion personal)\b/.test(
+        normalized
+      ),
+    wantsStats:
+      /\b(estadistica|estadisticas|resumen|porcentaje|porcentajes|nivel|niveles|estado general|panel|dashboard)\b/.test(
+        normalized
+      ),
+    wantsCapabilities:
+      /\b(camara|camaras|camara de seguridad|vision|video|videos|grabar|graba|vigilar|vigilancia|funcion|funciones|que hace la app|que puede hacer|que hace domoticpet|que puede hacer domoticpet|compatibilidad|compatible|modulo|modulos|que informacion|que datos|puedes ver la app|informacion de la app|datos de la app)\b/.test(
+        normalized
       )
   };
+}
+
+function buildContextAvailabilityBlock({
+  pets,
+  routines,
+  devices,
+  userProfile,
+  recentNotifications,
+  intent
+}) {
+  if (!pets.length && !routines.length && !devices.length && !userProfile && !recentNotifications.length) {
+    return "No hay datos adicionales de la app disponibles en este turno.";
+  }
+
+  const lines = [
+    "Resumen interno del contexto disponible:",
+    `- Mascotas disponibles: ${pets.length}`,
+    `- Rutinas disponibles: ${routines.length}`,
+    `- Dispositivos disponibles: ${devices.length}`,
+    `- Perfil disponible: ${userProfile ? "Si" : "No"}`,
+    `- Notificaciones recientes disponibles: ${recentNotifications.length}`
+  ];
+
+  if (intent.wantsSummary || intent.wantsCapabilities || intent.wantsAccount) {
+    lines.push("Si el usuario pregunta por la informacion de la app, responde usando este contexto y no digas que no puedes verlo.");
+  }
+
+  return lines.join("\n");
 }
 
 function buildUnavailableFeatureReply(message) {
@@ -453,6 +943,13 @@ function buildRelevantPetsBlock({ pets, selectedPet, intent }) {
     ].join("\n");
   }
 
+  if (pets.length <= 3) {
+    return [
+      "Mascotas registradas para referencia interna:",
+      pets.slice(0, 3).map((pet) => formatPetOverview(pet)).join("\n")
+    ].join("\n");
+  }
+
   const count = pets.length;
   return `Hay ${count} mascota(s) disponibles para referencia interna. No muestres sus nombres ni sus datos salvo que el usuario los pida.`;
 }
@@ -480,6 +977,126 @@ function buildRelevantRoutinesBlock({ routines, selectedPet, intent }) {
   ].join("\n");
 }
 
+function buildRelevantDevicesBlock({ devices, selectedDevice, intent }) {
+  if (intent.isGreetingOnly) {
+    return null;
+  }
+
+  if (!devices.length) {
+    return "No hay dispositivos DomoticPet conectados en la app.";
+  }
+
+  if (selectedDevice) {
+    return [
+      "Dispositivo relevante para responder:",
+      formatDeviceContext(selectedDevice)
+    ].join("\n");
+  }
+
+  if (
+    intent.wantsDeviceStatus ||
+    intent.wantsStats ||
+    intent.wantsNotifications ||
+    intent.wantsCapabilities ||
+    intent.wantsSummary ||
+    devices.length <= 3
+  ) {
+    return [
+      "Inventario interno de dispositivos:",
+      devices.slice(0, 6).map((device) => formatDeviceInventoryLine(device)).join("\n")
+    ].join("\n");
+  }
+
+  return `Hay ${devices.length} dispositivo(s) DomoticPet registrados para referencia interna. No muestres la lista completa salvo que el usuario la pida.`;
+}
+
+function buildAppCapabilitiesBlock({ appStats, devices, intent }) {
+  if (intent.isGreetingOnly) return null;
+
+  const configuredTypes = Array.from(
+    new Set(
+      devices
+        .map((device) => optionalText(device.typeLabel))
+        .filter(Boolean)
+    )
+  );
+
+  return [
+    "Capacidades reales de DomoticPet:",
+    "- Modulos actuales: mascotas, rutinas, perfil, notificaciones, chat IA y dispositivos DomoticPet.",
+    "- Dispositivos compatibles de la app: comedero, bebedero y arenero.",
+    "- No hay camaras, video ni vigilancia.",
+    appStats ? `- Dispositivos registrados ahora: ${appStats.totalDevices}.` : null,
+    configuredTypes.length
+      ? `- Tipos de dispositivos presentes en esta cuenta: ${configuredTypes.join(", ")}.`
+      : "- Aun no hay dispositivos registrados en esta cuenta.",
+    "- Los estados de dispositivos corresponden al ultimo estado sincronizado por la app."
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
+function buildStatsBlock({ appStats, intent }) {
+  if (!appStats || intent.isGreetingOnly) return null;
+
+  return [
+    "Resumen interno de la app:",
+    `- Mascotas: ${appStats.totalPets}`,
+    `- Dispositivos: ${appStats.totalDevices}`,
+    `- Comederos: ${appStats.feederDevices}`,
+    `- Bebederos: ${appStats.waterFountainDevices}`,
+    `- Areneros: ${appStats.litterBoxDevices}`,
+    `- Rutinas: ${appStats.totalRoutines}`,
+    `- Notificaciones sin leer: ${appStats.unreadNotifications}`,
+    `- Dispositivos en linea: ${appStats.onlineDevices}`,
+    `- Dispositivos sin conexion: ${appStats.offlineDevices}`,
+    `- Dispositivos en bajo nivel: ${appStats.lowLevelDevices}`,
+    `- Dispositivos en nivel critico: ${appStats.criticalLevelDevices}`
+  ].join("\n");
+}
+
+function buildUserProfileBlock({ userProfile, intent }) {
+  if (!userProfile || (!intent.wantsAccount && !intent.wantsSummary)) {
+    return null;
+  }
+
+  const lines = ["Perfil real de la cuenta:"];
+  addLine(lines, "Nombre", userProfile.fullName);
+  addLine(lines, "Ubicacion", userProfile.location);
+  addLine(lines, "Plan", userProfile.planName);
+  addLine(lines, "Miembro desde", userProfile.memberSince);
+  return lines.join("\n");
+}
+
+function buildNotificationSettingsBlock({ notificationSettings, intent }) {
+  if (!notificationSettings || !intent.wantsNotifications) {
+    return null;
+  }
+
+  return [
+    "Configuracion actual de notificaciones:",
+    `- Todas activas: ${notificationSettings.allNotificationsEnabled ? "Si" : "No"}`,
+    `- Sonido: ${notificationSettings.soundEnabled ? "Si" : "No"}`,
+    `- Comedero: comida servida=${boolLabel(notificationSettings.feederMealServedEnabled)}, nivel bajo=${boolLabel(notificationSettings.feederLowFoodEnabled)}, comida agotada=${boolLabel(notificationSettings.feederFoodEmptyEnabled)}`,
+    `- Bebedero: cambio de agua=${boolLabel(notificationSettings.waterFreshEnabled)}, nivel bajo=${boolLabel(notificationSettings.waterLowEnabled)}, agua agotada=${boolLabel(notificationSettings.waterEmptyEnabled)}`,
+    `- Arenero: gato detectado=${boolLabel(notificationSettings.litterCatDetectedEnabled)}, limpieza completada=${boolLabel(notificationSettings.litterCleaningCompleteEnabled)}, nivel bajo=${boolLabel(notificationSettings.litterLowLevelEnabled)}, recordatorio=${boolLabel(notificationSettings.litterReminderEnabled)}`
+  ].join("\n");
+}
+
+function buildRecentNotificationsBlock({ recentNotifications, intent }) {
+  if (!recentNotifications.length || !intent.wantsNotifications) {
+    return null;
+  }
+
+  return [
+    "Notificaciones recientes:",
+    recentNotifications
+      .slice(0, 8)
+      .map((notification, index) => formatNotificationContext(notification, index + 1))
+      .join("\n")
+  ].join("\n");
+}
+
 function buildAmbiguityNote({ pets, selectedPet, currentMessage }) {
   if (selectedPet) return null;
 
@@ -498,6 +1115,25 @@ function buildAmbiguityNote({ pets, selectedPet, currentMessage }) {
   return `Atencion: hay varias mascotas con este nombre: ${duplicatedNames.join(", ")}. Si hace falta, pide una aclaracion corta.`;
 }
 
+function buildDeviceAmbiguityNote({ devices, selectedDevice, currentMessage }) {
+  if (selectedDevice || !devices.length) return null;
+
+  const normalizedMessage = normalizeName(currentMessage);
+  const mentionedTypes = devices
+    .filter((device) => normalizedMessage.includes(normalizeName(device.typeLabel)))
+    .map((device) => device.typeLabel);
+
+  if (!mentionedTypes.length) return null;
+
+  const duplicatedTypes = findDuplicatedDeviceTypes(devices).filter((typeLabel) =>
+    mentionedTypes.some((mentioned) => normalizeName(mentioned) === normalizeName(typeLabel))
+  );
+
+  if (!duplicatedTypes.length) return null;
+
+  return `Atencion: hay varios dispositivos de tipo ${duplicatedTypes.join(", ")}. Si hace falta, pide una aclaracion corta por nombre.`;
+}
+
 function findDuplicatedPetNames(pets) {
   const counts = new Map();
 
@@ -514,10 +1150,27 @@ function findDuplicatedPetNames(pets) {
     });
 }
 
+function findDuplicatedDeviceTypes(devices) {
+  const counts = new Map();
+
+  for (const device of devices) {
+    const normalized = normalizeName(device.typeLabel);
+    counts.set(normalized, (counts.get(normalized) || 0) + 1);
+  }
+
+  return devices
+    .map((device) => device.typeLabel)
+    .filter((typeLabel, index, labels) => {
+      const normalized = normalizeName(typeLabel);
+      return counts.get(normalized) > 1 && labels.indexOf(typeLabel) === index;
+    });
+}
+
 function formatPetContext(pet, intent) {
   const lines = [`Nombre: ${pet.name}`];
 
   addLine(lines, "Tipo", pet.typeLabel || pet.type || pet.customType);
+  addLine(lines, "Foto registrada", pet.hasPhoto ? "Si" : "No");
   addLine(lines, "Raza", pet.breed);
   addLine(lines, "Edad", pet.ageLabel || buildAgeFallback(pet));
   addLine(lines, "Peso", pet.weightLabel || buildWeightFallback(pet));
@@ -566,6 +1219,72 @@ function formatRoutineContext(routine, index) {
   return `- ${detail.join(" - ")}`;
 }
 
+function formatDeviceContext(device) {
+  const lines = [`Nombre: ${device.customName}`];
+
+  addLine(lines, "Tipo", device.typeLabel);
+  addLine(lines, "Estado de conexion", device.isOnline ? "En linea" : "Sin conexion");
+  addLine(lines, "Red WiFi", device.wifiSsid);
+  addLine(lines, "IP", device.ipAddress);
+  addLine(lines, "Nivel", buildLevelFallback(device));
+  addLine(lines, "Estado actual", device.currentStatusLabel);
+  addLine(lines, "Estado de nivel", device.levelStatusLabel);
+  addLine(lines, "Alerta", device.alertState);
+  addLine(lines, "Modo del comedero", device.feederMode);
+  addLine(lines, "Peso constante", device.feederConstantGrams ? `${device.feederConstantGrams} g` : null);
+  addLine(lines, "Ultima porcion", device.feederLastPortionGrams ? `${device.feederLastPortionGrams} g` : null);
+  addLine(lines, "Proxima alimentacion", device.nextFeedingLabel);
+  if (typeof device.waterCirculationActive === "boolean") {
+    addLine(lines, "Circulacion", device.waterCirculationActive ? "Activa" : "Inactiva");
+  }
+  addLine(lines, "Ultimo cambio de agua", device.waterLastChangeLabel);
+  addLine(lines, "Ultima recarga", device.waterLastRefillLabel);
+  addLine(lines, "Modo del arenero", device.litterMode);
+  addLine(lines, "Retraso despues del uso", device.litterDelayMinutes ? `${device.litterDelayMinutes} min` : null);
+  addLine(lines, "Ultima limpieza", device.litterLastCleaningLabel);
+  addLine(lines, "Ultimo uso", device.litterLastUsageLabel);
+
+  if (Array.isArray(device.schedules) && device.schedules.length) {
+    lines.push("Horarios relevantes:");
+    device.schedules.forEach((schedule) => {
+      const detail = [schedule.label, schedule.detail].filter(Boolean).join(" - ");
+      lines.push(`- ${detail}`);
+    });
+  }
+
+  if (Array.isArray(device.recentHistory) && device.recentHistory.length) {
+    lines.push("Historial reciente:");
+    device.recentHistory.forEach((entry) => {
+      const detail = [entry.createdAtLabel, entry.title, entry.value].filter(Boolean).join(" - ");
+      lines.push(`- ${detail}`);
+    });
+  }
+
+  return lines.join("\n");
+}
+
+function formatDeviceInventoryLine(device) {
+  const parts = [
+    device.customName,
+    device.typeLabel,
+    device.isOnline ? "en linea" : "sin conexion",
+    typeof device.levelPercent === "number" ? `${device.levelPercent}%` : null
+  ].filter(Boolean);
+
+  return `- ${parts.join(" - ")}`;
+}
+
+function formatNotificationContext(notification, index) {
+  const parts = [
+    `${index}. ${notification.title}`,
+    notification.deviceType,
+    notification.createdAtLabel,
+    notification.isRead ? "leida" : "sin leer"
+  ].filter(Boolean);
+
+  return `- ${parts.join(" - ")} - ${notification.body}`;
+}
+
 function buildAgeFallback(pet) {
   if (!pet.ageValue) return "";
   return pet.ageUnit ? `${pet.ageValue} ${pet.ageUnit}` : pet.ageValue;
@@ -573,6 +1292,10 @@ function buildAgeFallback(pet) {
 
 function buildWeightFallback(pet) {
   return pet.weightKg ? `${pet.weightKg} kg` : "";
+}
+
+function buildLevelFallback(device) {
+  return typeof device.levelPercent === "number" ? `${device.levelPercent}%` : "";
 }
 
 function buildEmergencyFallback(pet) {
@@ -634,6 +1357,10 @@ function buildNeuteredLabel(value) {
   if (value === true) return "Si";
   if (value === false) return "No";
   return "";
+}
+
+function boolLabel(value) {
+  return value ? "Si" : "No";
 }
 
 function buildFoodInstruction(selectedPet) {
@@ -733,28 +1460,70 @@ function writeEvent(res, payload) {
   res.write(`${JSON.stringify(payload)}\n`);
 }
 
-function sendHttpError(res, error) {
-  const status = error instanceof HttpError ? error.status : error?.status || 500;
+function sendHttpError(res, error, route = "/chat") {
+  const status = getClientSafeStatus(error);
+  logServerError(error, route);
   res.status(status).json({
     error: "chat_failed",
-    message: getErrorMessage(error)
+    message: getClientSafeErrorMessage(error)
   });
 }
 
-function getErrorMessage(error) {
+function getClientSafeStatus(error) {
+  if (error instanceof HttpError) {
+    return error.status;
+  }
+
+  if (error?.status === 429) {
+    return 429;
+  }
+
+  if (typeof error?.status === "number" && error.status >= 400) {
+    return 502;
+  }
+
+  return 500;
+}
+
+function getClientSafeErrorMessage(error) {
   if (error instanceof HttpError) {
     return error.message;
   }
 
-  if (error?.status && error?.message) {
-    return `${error.status}: ${error.message}`;
+  if (error?.status === 401 || error?.status === 403) {
+    return "El servicio de IA no esta disponible ahora. Intenta de nuevo mas tarde.";
   }
 
-  if (error instanceof Error) {
-    return error.message;
+  if (error?.status === 429) {
+    return "El servicio de IA esta ocupado en este momento. Intenta de nuevo en un momento.";
   }
 
-  return "Unexpected backend error";
+  if (typeof error?.status === "number" && error.status >= 500) {
+    return "El servicio de IA no esta disponible ahora. Intenta de nuevo mas tarde.";
+  }
+
+  if (error?.code === "ETIMEDOUT" || error?.code === "ECONNRESET") {
+    return "La conexion con el servicio de IA tardo demasiado. Intenta de nuevo.";
+  }
+
+  return "Ocurrio un error inesperado en el backend.";
+}
+
+function logServerError(error, route) {
+  const status = error?.status ?? "no-status";
+  const code = error?.code ?? "no-code";
+  const message =
+    error instanceof Error
+      ? error.message
+      : typeof error?.message === "string"
+        ? error.message
+        : String(error);
+
+  console.error(`[${route}]`, {
+    status,
+    code,
+    message
+  });
 }
 
 class HttpError extends Error {

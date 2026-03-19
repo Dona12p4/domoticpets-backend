@@ -766,12 +766,10 @@ function buildSelectedPetResolvedBlock({ selectedPet, intent }) {
   const lines = [
     `La mascota mencionada en este turno ya esta resuelta: ${selectedPet.name}.`,
     petType ? `Tipo confirmado de esa mascota: ${petType}.` : null,
-    "No vuelvas a preguntar si es perro o gato si ese dato ya aparece aqui."
+    "Usa esta mascota como referencia principal en toda la respuesta.",
+    "No vuelvas a preguntar si es perro o gato si ese dato ya aparece aqui.",
+    "No vuelvas a pedir nombre, especie o tipo de esta mascota salvo que exista un conflicto real entre varios registros."
   ];
-
-  if (intent.wantsFood) {
-    lines.push("Si el usuario pide recomendacion de comida para esta mascota, responde tomando esta mascota como referencia principal sin pedir de nuevo la especie.");
-  }
 
   return lines.filter(Boolean).join("\n");
 }

@@ -50,17 +50,6 @@ app.get("/health", (_req, res) => {
 
 app.post("/chat", async (req, res) => {
   try {
-    const gatedReply = buildUnavailableFeatureReply(req.body?.message);
-    if (gatedReply) {
-      res.json({
-        reply: gatedReply,
-        responseId: null,
-        model,
-        handledLocally: true
-      });
-      return;
-    }
-
     const response = await openai.responses.create(
       await buildResponsesPayload(req.body, false)
     );
@@ -85,24 +74,6 @@ app.post("/chat/stream", async (req, res) => {
   res.flushHeaders();
 
   try {
-    const gatedReply = buildUnavailableFeatureReply(req.body?.message);
-    if (gatedReply) {
-      writeEvent(res, {
-        type: "response_created",
-        responseId: null
-      });
-      writeEvent(res, {
-        type: "text_delta",
-        delta: gatedReply
-      });
-      writeEvent(res, {
-        type: "completed",
-        responseId: null,
-        outputText: gatedReply
-      });
-      return;
-    }
-
     const stream = await openai.responses.create(
       await buildResponsesPayload(req.body, true)
     );
@@ -879,40 +850,6 @@ function buildContextAvailabilityBlock({
   }
 
   return lines.join("\n");
-}
-
-function buildUnavailableFeatureReply(message) {
-  const text = optionalText(message);
-  if (!text) return null;
-
-  const normalized = normalizeName(text);
-  if (!requestsUnavailableCapability(normalized)) {
-    return null;
-  }
-
-  return [
-    "Esta funcion no esta disponible en la version actual de DomoticPet.",
-    "Actualiza al plan Premium para acceder a funciones como:",
-    "- internet en tiempo real",
-    "- analisis de imagenes",
-    "- chat por voz",
-    "- funciones multimedia avanzadas."
-  ].join("\n");
-}
-
-function requestsUnavailableCapability(normalizedMessage) {
-  const patterns = [
-    /\b(buscalo en internet|busca en internet|busca en google|buscalo en google|busca en la web|busqueda web|navega por internet|consulta internet)\b/,
-    /\b(clima de hoy|temperatura de hoy|noticias de hoy|precio de hoy|actualizado en internet|informacion actualizada|en tiempo real)\b/,
-    /\b(analiza esta foto|analiza esta imagen|mira esta foto|mira esta imagen|reconoce la raza por imagen|reconoce por foto|que ves en esta foto|que tiene en esta foto)\b/,
-    /\b(te voy a mandar una imagen|te mandare una imagen|te voy a enviar una imagen|te voy a mandar una foto|te mandare una foto|subir una imagen|subir una foto)\b/,
-    /\b(hablame por voz|quiero hablar por voz|chat por voz|respuesta por voz|audio de voz|te voy a mandar un audio|te mandare un audio|te voy a enviar un audio|escucha este audio)\b/,
-    /\b(multimedia|video|analiza este video|mira este video|te voy a mandar un video|te mandare un video)\b/,
-    /\b(busca veterinarias cerca|veterinarias cerca|veterinario cerca|veterinaria cerca|lugares cerca|cerca de mi)\b/,
-    /\b(funcion premium|plan premium|premium)\b.*\b(internet|voz|imagen|imagenes|audio|multimedia)\b/
-  ];
-
-  return patterns.some((pattern) => pattern.test(normalizedMessage));
 }
 
 function buildRelevantPetsBlock({ pets, selectedPet, intent }) {

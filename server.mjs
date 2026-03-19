@@ -763,11 +763,17 @@ function buildSelectedPetResolvedBlock({ selectedPet, intent }) {
   if (!selectedPet) return null;
 
   const petType = optionalText(selectedPet.typeLabel) || optionalText(selectedPet.type) || optionalText(selectedPet.customType);
+  const inferredLifeStage = inferPetLifeStage(selectedPet);
   const lines = [
     `La mascota mencionada en este turno ya esta resuelta: ${selectedPet.name}.`,
     petType ? `Tipo confirmado de esa mascota: ${petType}.` : null,
+    optionalText(selectedPet.ageLabel) ? `Edad disponible de esa mascota: ${selectedPet.ageLabel}.` : null,
+    optionalText(selectedPet.weightLabel) ? `Peso disponible de esa mascota: ${selectedPet.weightLabel}.` : null,
+    inferredLifeStage ? `Etapa de vida inferida de esa mascota: ${inferredLifeStage}.` : null,
     "Usa esta mascota como referencia principal en toda la respuesta.",
     "No vuelvas a preguntar si es perro o gato si ese dato ya aparece aqui.",
+    "Antes de preguntar algo sobre esta mascota, revisa si el dato ya aparece arriba o si puede inferirse con lo que ya esta guardado.",
+    "Si ya tienes edad y tipo de mascota, no vuelvas a preguntar si es cachorro, gatito, adulto o senior.",
     "No vuelvas a pedir nombre, especie o tipo de esta mascota salvo que exista un conflicto real entre varios registros."
   ];
 
@@ -1325,22 +1331,70 @@ function buildFoodInstruction(selectedPet) {
     return "Si faltan datos del alimento para responder bien, pide solo la marca y, si hace falta, la linea o descripcion general del producto.";
   }
 
+  const inferredLifeStage = inferPetLifeStage(selectedPet);
+  const instructions = [];
+
+  if (inferredLifeStage) {
+    instructions.push([
+      `Ya puedes inferir la etapa de vida de ${selectedPet.name} como ${inferredLifeStage}.`,
+      "No vuelvas a preguntar si es cachorro, gatito, adulto o senior si eso ya se puede deducir.",
+      "Solo pide una aclaracion adicional si falta algo realmente critico para distinguir una recomendacion."
+    ].join(" "));
+  }
+
   if (Array.isArray(selectedPet.foodCatalogMatches) && selectedPet.foodCatalogMatches.length === 1) {
     const match = selectedPet.foodCatalogMatches[0];
     if (match.kcalPerKg || match.kcalPerCup) {
-      return "Hay una coincidencia clara en el catalogo local y trae energia verificada. Puedes usarla como apoyo interno para orientar una porcion de forma simple, sin mostrar formulas ni tecnicismos.";
+      instructions.push("Hay una coincidencia clara en el catalogo local y trae energia verificada. Puedes usarla como apoyo interno para orientar una porcion de forma simple, sin mostrar formulas ni tecnicismos.");
+      return instructions.join(" ");
     }
   }
 
   if (Array.isArray(selectedPet.foodCatalogMatches) && selectedPet.foodCatalogMatches.length > 1) {
-    return "Hay varias coincidencias posibles en el catalogo local. No adivines cual es. Si hace falta, pide solo una aclaracion corta sobre la linea o el nombre exacto del producto.";
+    instructions.push("Hay varias coincidencias posibles en el catalogo local. No adivines cual es. Si hace falta, pide solo una aclaracion corta sobre la linea o el nombre exacto del producto.");
+    return instructions.join(" ");
   }
 
   if (selectedPet.foodBrands && !selectedPet.foodDescription) {
-    return "Solo hay una marca general del alimento y no alcanza para identificar bien el producto o la linea. No inventes calorias. Pide solo una aclaracion corta sobre el nombre exacto, la linea o la descripcion del alimento.";
+    instructions.push("Solo hay una marca general del alimento y no alcanza para identificar bien el producto o la linea. No inventes calorias. Pide solo una aclaracion corta sobre el nombre exacto, la linea o la descripcion del alimento.");
+    return instructions.join(" ");
   }
 
-  return "Si faltan datos para responder bien sobre comida, pide solo el dato faltante mas importante en una pregunta corta y sin formulas tecnicas.";
+  instructions.push("Si faltan datos para responder bien sobre comida, pide solo el dato faltante mas importante en una pregunta corta y sin formulas tecnicas.");
+  return instructions.join(" ");
+}
+
+function inferPetLifeStage(pet) {
+  const ageValue = normalizeOptionalNumber(pet?.ageValue);
+  const ageUnit = normalizeName(pet?.ageUnit || "");
+  const petType = normalizeName(pet?.typeLabel || pet?.type || pet?.customType || "");
+  const sex = normalizeName(pet?.sex || "");
+
+  if (ageValue === null || !ageUnit) return null;
+
+  const ageInMonths = ageUnit.includes("ano") || ageUnit.includes("year")
+    ? ageValue * 12
+    : ageUnit.includes("mes") || ageUnit.includes("month")
+      ? ageValue
+      : null;
+
+  if (ageInMonths === null) return null;
+
+  if (petType.includes("gato") || petType.includes("cat")) {
+    if (ageInMonths < 12) return sex.includes("macho") ? "gatito" : "gatita";
+    if (ageInMonths >= 84) return "senior";
+    return sex.includes("macho") ? "adulto" : "adulta";
+  }
+
+  if (petType.includes("perro") || petType.includes("dog")) {
+    if (ageInMonths < 12) return "cachorro";
+    if (ageInMonths >= 84) return "senior";
+    return sex.includes("hembra") ? "adulta" : "adulto";
+  }
+
+  if (ageInMonths < 12) return "joven";
+  if (ageInMonths >= 84) return "senior";
+  return "adulta";
 }
 
 function normalizeName(value) {

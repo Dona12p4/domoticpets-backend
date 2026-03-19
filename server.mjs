@@ -686,6 +686,10 @@ function buildInstructions({
   const focusBlock = selectedPet
     ? `Mascota principal para este turno: ${selectedPet.name}.`
     : null;
+  const selectedPetResolvedBlock = buildSelectedPetResolvedBlock({
+    selectedPet,
+    intent
+  });
   const focusDeviceBlock = selectedDevice
     ? `Dispositivo principal para este turno: ${selectedDevice.customName}.`
     : null;
@@ -697,6 +701,7 @@ function buildInstructions({
     contextAvailabilityBlock,
     appCapabilitiesBlock,
     focusBlock,
+    selectedPetResolvedBlock,
     focusDeviceBlock,
     ambiguityNote,
     deviceAmbiguityNote,
@@ -752,6 +757,23 @@ function resolveSelectedPet({ pets, selectedPetId, selectedPetName, currentMessa
   );
 
   return mentionedPets.length === 1 ? mentionedPets[0] : null;
+}
+
+function buildSelectedPetResolvedBlock({ selectedPet, intent }) {
+  if (!selectedPet) return null;
+
+  const petType = optionalText(selectedPet.typeLabel) || optionalText(selectedPet.type) || optionalText(selectedPet.customType);
+  const lines = [
+    `La mascota mencionada en este turno ya esta resuelta: ${selectedPet.name}.`,
+    petType ? `Tipo confirmado de esa mascota: ${petType}.` : null,
+    "No vuelvas a preguntar si es perro o gato si ese dato ya aparece aqui."
+  ];
+
+  if (intent.wantsFood) {
+    lines.push("Si el usuario pide recomendacion de comida para esta mascota, responde tomando esta mascota como referencia principal sin pedir de nuevo la especie.");
+  }
+
+  return lines.filter(Boolean).join("\n");
 }
 
 function resolveSelectedDevice({ devices, currentMessage }) {

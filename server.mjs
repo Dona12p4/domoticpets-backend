@@ -929,8 +929,8 @@ function analyzeMessageIntent(currentMessage) {
       /\b(crea|crear|agrega|agregar|programa|programar|haz|hacer)\b/.test(normalized) &&
       /\b(rutina|recordatorio|alarma)\b/.test(normalized),
     wantsSavePetInfoAction:
-      /\b(guarda|guardar|agrega|agregar|anade|añade|actualiza|actualizar|anota|deja)\b/.test(normalized) &&
-      /\b(descripcion|descripción|perfil|info|informacion|información|nota|notas)\b/.test(normalized),
+      /\b(guarda|guardar|agrega|agregar|anade|añade|actualiza|actualizar|anota|deja|recuerda|registra)\b/.test(normalized) &&
+      /\b(descripcion|descripción|perfil|info|informacion|información|nota|notas|dato|datos|alergia|alergias|medicamento|medicamentos|condicion|condición|comportamiento|personalidad|comida|alimento|peso)\b/.test(normalized),
     wantsRenameDeviceAction:
       /\b(cambia|cambiar|renombra|renombrar|ponle|ponerle)\b/.test(normalized) &&
       /\b(nombre)\b/.test(normalized) &&
@@ -960,6 +960,7 @@ function buildRoutineActionBlock({ pets, selectedPet, intent }) {
     "time debe ir en formato 24 horas HH:mm.",
     "specificDays debe usar nombres en ingles como MONDAY, TUESDAY, WEDNESDAY, THURSDAY, FRIDAY, SATURDAY, SUNDAY solo si hace falta.",
     "Si falta un dato critico para crear la rutina bien, no generes el bloque. Haz solo una pregunta corta.",
+    "Si emites este bloque, ya puedes redactar la respuesta como una rutina agregada en la app.",
     petGuidance
   ].join("\n");
 }
@@ -972,7 +973,8 @@ function buildPetDescriptionActionBlock({ selectedPet, intent }) {
     "Primero responde normal y luego agrega exactamente este formato en una linea aparte:",
     `<domoticpet_action>{"id":"pet_note_x","type":"update_pet_description","executed":false,"petDescription":{"petId":${selectedPet.id ?? "null"},"petName":"${selectedPet.name}","appendText":"Texto breve para guardar en la descripcion"}}</domoticpet_action>`,
     "appendText debe ser breve, claro y util para recordar despues.",
-    "Solo genera esta accion si el usuario claramente quiere que esa informacion quede guardada en la app."
+    "Solo genera esta accion si el usuario claramente quiere que esa informacion quede guardada en la app.",
+    "Si emites esta accion, ya puedes redactar la respuesta como un cambio aplicado en la app."
   ].join("\n");
 }
 
@@ -984,7 +986,8 @@ function buildDeviceActionBlock({ selectedDevice, intent }) {
   if (intent.wantsRenameDeviceAction) {
     blocks.push([
       "Si el usuario quiere cambiar el nombre de un dispositivo y el dispositivo ya esta resuelto, puedes emitir esta accion:",
-      `<domoticpet_action>{"id":"device_rename_x","type":"rename_device","executed":false,"renameDevice":{"deviceId":${selectedDevice.id},"deviceName":"${selectedDevice.customName}","newName":"Nuevo nombre"}}</domoticpet_action>`
+      `<domoticpet_action>{"id":"device_rename_x","type":"rename_device","executed":false,"renameDevice":{"deviceId":${selectedDevice.id},"deviceName":"${selectedDevice.customName}","newName":"Nuevo nombre"}}</domoticpet_action>`,
+      "Si emites esta accion, ya puedes redactar la respuesta como un cambio aplicado en la app."
     ].join("\n"));
   }
 
@@ -992,7 +995,8 @@ function buildDeviceActionBlock({ selectedDevice, intent }) {
     blocks.push([
       "Si el usuario quiere activar o desactivar la circulacion del bebedero, puedes emitir esta accion:",
       `<domoticpet_action>{"id":"water_circulation_x","type":"set_water_circulation","executed":false,"waterCirculation":{"deviceId":${selectedDevice.id},"deviceName":"${selectedDevice.customName}","enabled":true}}</domoticpet_action>`,
-      "Usa enabled=true para activar y enabled=false para desactivar."
+      "Usa enabled=true para activar y enabled=false para desactivar.",
+      "Si emites esta accion, ya puedes redactar la respuesta como un cambio aplicado en la app."
     ].join("\n"));
   }
 

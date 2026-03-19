@@ -733,6 +733,11 @@ function buildInstructions({
     selectedPetImage,
     intent
   });
+  const routineActionBlock = buildRoutineActionBlock({
+    pets,
+    selectedPet,
+    intent
+  });
   const focusDeviceBlock = selectedDevice
     ? `Dispositivo principal para este turno: ${selectedDevice.customName}.`
     : null;
@@ -746,6 +751,7 @@ function buildInstructions({
     focusBlock,
     selectedPetResolvedBlock,
     selectedPetImageBlock,
+    routineActionBlock,
     focusDeviceBlock,
     ambiguityNote,
     deviceAmbiguityNote,
@@ -908,8 +914,34 @@ function analyzeMessageIntent(currentMessage) {
     wantsVisualAnalysis:
       /\b(raza|breed|foto|fotos|imagen|imagenes|revisa la foto|revisar la foto|mira la foto|mirar la foto|ves en la foto|que ves|como se ve|pelaje|color|parece)\b/.test(
         normalized
-      )
+      ),
+    wantsCreateRoutineAction:
+      /\b(crea|crear|agrega|agregar|programa|programar|haz|hacer)\b/.test(normalized) &&
+      /\b(rutina|recordatorio|alarma)\b/.test(normalized)
   };
+}
+
+function buildRoutineActionBlock({ pets, selectedPet, intent }) {
+  if (!intent.wantsCreateRoutineAction) return null;
+
+  const petGuidance = selectedPet
+    ? `Mascota objetivo ya resuelta para la accion: ${selectedPet.name}.`
+    : pets.length
+      ? `Mascotas disponibles para usar en la accion: ${pets.map((pet) => pet.name).join(", ")}.`
+      : "No hay mascotas registradas; si hace falta, la rutina puede ser general.";
+
+  return [
+    "Si el usuario esta pidiendo crear, agregar o programar una rutina y ya tienes datos suficientes, agrega al final de tu respuesta un bloque oculto de accion.",
+    "Primero responde en lenguaje natural. Despues, en una linea aparte, agrega exactamente este formato sin explicarlo:",
+    '<domoticpet_action>{"id":"routine_x","type":"create_routine","executed":false,"routine":{"name":"Nombre","petId":1,"petName":"Mimi","category":"Food","priority":"High","time":"19:00","frequencyType":"Daily","specificDays":[],"intervalDays":1,"notes":"", "startDate":"2026-03-19","endDate":null,"notificationsEnabled":true,"alarmEnabled":false,"vibrationEnabled":true,"colorHex":"#12B6D8","repeatIndefinitely":true,"isImportant":false}}</domoticpet_action>',
+    "Usa solo estos valores para category: Food, Medication, Walk, Hygiene, Play, Vet, Other.",
+    "Usa solo estos valores para priority: High, Medium, Low. Si no aplica, omite el valor o dejalo null.",
+    "Usa solo estos valores para frequencyType: Once, Daily, SpecificDays, EveryXDays, Weekly, Monthly.",
+    "time debe ir en formato 24 horas HH:mm.",
+    "specificDays debe usar nombres en ingles como MONDAY, TUESDAY, WEDNESDAY, THURSDAY, FRIDAY, SATURDAY, SUNDAY solo si hace falta.",
+    "Si falta un dato critico para crear la rutina bien, no generes el bloque. Haz solo una pregunta corta.",
+    petGuidance
+  ].join("\n");
 }
 
 function buildContextAvailabilityBlock({

@@ -21,9 +21,17 @@ const app = express();
 
 app.disable("x-powered-by");
 app.use(cors());
-app.use(express.json({ limit: "6mb" }));
+app.use(express.json({ limit: "10mb" }));
 
 app.use((error, _req, res, next) => {
+  if (error?.type === "entity.too.large") {
+    res.status(413).json({
+      error: "payload_too_large",
+      message: "La consulta fue demasiado pesada para el chat. Intenta de nuevo con menos contexto o sin foto."
+    });
+    return;
+  }
+
   if (error instanceof SyntaxError && "body" in error) {
     res.status(400).json({
       error: "invalid_json",

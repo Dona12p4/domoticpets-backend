@@ -402,8 +402,14 @@ async function enrichDevicesWithRealtimeState(devices) {
 }
 
 async function fetchRealtimeNode(nodeName) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 1500);
+
   try {
-    const response = await fetch(`${realtimeDbBaseUrl.replace(/\/$/, "")}/dispositivos/${nodeName}.json`);
+    const response = await fetch(
+      `${realtimeDbBaseUrl.replace(/\/$/, "")}/dispositivos/${nodeName}.json`,
+      { signal: controller.signal }
+    );
     if (!response.ok) {
       return null;
     }
@@ -416,6 +422,8 @@ async function fetchRealtimeNode(nodeName) {
     return payload;
   } catch {
     return null;
+  } finally {
+    clearTimeout(timeout);
   }
 }
 

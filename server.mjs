@@ -864,8 +864,9 @@ function buildSelectedPetImageBlock({ selectedPet, selectedPetImage, intent }) {
   return [
     `Imagen real adjunta para este turno: corresponde a ${petName}.`,
     "Puedes usar la imagen para analizar rasgos visibles si ayudan a responder.",
-    "Si te piden la raza a partir de la foto, responde como una estimacion prudente y no como una certeza absoluta.",
+    "Si te piden la raza a partir de la foto, responde primero con la raza aparente o el tipo visible mas probable y luego aclara que es una estimacion prudente, no una certeza absoluta.",
     "Si la foto no permite identificar bien la raza, dilo con honestidad y sugiere que probablemente sea mestizo o mezcla cuando aplique.",
+    "No ignores rasgos visuales claros como largo del pelaje, patron del manto, forma general de la cara o coloraciones evidentes.",
     "No digas que no puedes ver la foto si esta imagen fue adjunta en este turno."
   ].join("\n");
 }
@@ -1520,12 +1521,17 @@ function buildFoodInstruction(selectedPet) {
   }
 
   if (Array.isArray(selectedPet.foodCatalogMatches) && selectedPet.foodCatalogMatches.length > 1) {
-    instructions.push("Hay varias coincidencias posibles en el catalogo local. No adivines cual es. Si hace falta, pide solo una aclaracion corta sobre la linea o el nombre exacto del producto.");
+    instructions.push("Hay varias coincidencias posibles en el catalogo local. No adivines cual es, pero si el usuario pide una porcion puedes dar primero una guia aproximada basada en peso, especie y etapa de vida. Solo despues pide una aclaracion corta sobre la linea o el nombre exacto del producto si quiere mas precision.");
     return instructions.join(" ");
   }
 
   if (selectedPet.foodBrands && !selectedPet.foodDescription) {
-    instructions.push("Solo hay una marca general del alimento y no alcanza para identificar bien el producto o la linea. No inventes calorias. Pide solo una aclaracion corta sobre el nombre exacto, la linea o la descripcion del alimento.");
+    instructions.push("Solo hay una marca general del alimento y no alcanza para identificar bien el producto o la linea. No inventes calorias exactas, pero si ya tienes peso, especie o etapa de vida da primero una guia diaria aproximada en gramos. Despues ofrece afinarla si el usuario comparte la linea o presentacion exacta.");
+    return instructions.join(" ");
+  }
+
+  if (selectedPet.weightKg || inferredLifeStage) {
+    instructions.push("Si no tienes el producto exacto pero si peso, especie o etapa de vida, responde primero con una estimacion util y prudente en gramos o rango diario. No obligues al usuario a darte calorias exactas para poder orientarlo.");
     return instructions.join(" ");
   }
 

@@ -154,6 +154,7 @@ async function buildResponsesPayload(body, stream) {
   const selectedPetId = normalizeOptionalNumber(body?.selectedPetId);
   const selectedPetName = optionalText(body?.selectedPetName);
   const selectedPetImage = normalizeSelectedPetImage(body?.selectedPetImage);
+  const assistantDisplayName = optionalText(body?.assistantDisplayName) || "IAn";
 
   return {
     model,
@@ -170,7 +171,8 @@ async function buildResponsesPayload(body, stream) {
       recentNotifications,
       selectedPetId,
       selectedPetName,
-      selectedPetImage
+      selectedPetImage,
+      assistantDisplayName
     }),
     ...(previousResponseId ? { previous_response_id: previousResponseId } : {}),
     input: [
@@ -666,7 +668,8 @@ function buildInstructions({
   recentNotifications,
   selectedPetId,
   selectedPetName,
-  selectedPetImage
+  selectedPetImage,
+  assistantDisplayName
 }) {
   const intent = analyzeMessageIntent(currentMessage);
   const selectedPet = resolveSelectedPet({
@@ -769,6 +772,7 @@ function buildInstructions({
   return [
     systemPrompt,
     "",
+    `Nombre visible del asistente en este turno: ${assistantDisplayName}.`,
     "Contexto real para este turno:",
     contextAvailabilityBlock,
     appCapabilitiesBlock,
@@ -804,7 +808,7 @@ function buildInstructions({
       : "No menciones dispositivos, niveles, notificaciones ni estados salvo que el usuario lo pida.",
     "No menciones inconsistencias ni datos extranos salvo que el usuario pida revisar la informacion.",
     intent.wantsFood ? buildFoodInstruction(selectedPet) : null,
-    intent.isGreetingOnly ? buildGreetingInstruction() : null,
+    intent.isGreetingOnly ? buildGreetingInstruction(assistantDisplayName) : null,
     "Si la informacion actual alcanza para responder, responde directo.",
     "Si falta algo importante, haz solo una pregunta corta."
   ]
@@ -978,6 +982,7 @@ function buildRoutineActionBlock({ pets, selectedPet, intent }) {
     "specificDays debe usar nombres en ingles como MONDAY, TUESDAY, WEDNESDAY, THURSDAY, FRIDAY, SATURDAY, SUNDAY solo si hace falta.",
     "Si falta un dato critico para crear la rutina bien, no generes el bloque. Haz solo una pregunta corta.",
     "Si emites este bloque, ya puedes redactar la respuesta como una rutina agregada en la app.",
+    "No escribas frases como 'accion emitida' ni expliques el JSON de la accion en el texto visible.",
     petGuidance
   ].join("\n");
 }
@@ -987,11 +992,14 @@ function buildPetDescriptionActionBlock({ selectedPet, intent }) {
 
   return [
     "Si el usuario quiere guardar una informacion importante dentro de la mascota y ya sabes a cual mascota se refiere, puedes emitir una accion para agregarla a su descripcion.",
+    "Esto tambien aplica si el usuario aporta un dato nuevo y util sobre su comida, como marca, linea, presentacion o una nota breve importante para recordar despues.",
+    "No ofrezcas guardarlo en la app para estimaciones pasajeras, porciones sugeridas del momento o consejos generales que no sean un dato estable de la mascota.",
     "Primero responde normal y luego agrega exactamente este formato en una linea aparte:",
     `<domoticpet_action>{"id":"pet_note_x","type":"update_pet_description","executed":false,"petDescription":{"petId":${selectedPet.id ?? "null"},"petName":"${selectedPet.name}","appendText":"Texto breve para guardar en la descripcion"}}</domoticpet_action>`,
     "appendText debe ser breve, claro y util para recordar despues.",
     "Solo genera esta accion si el usuario claramente quiere que esa informacion quede guardada en la app.",
-    "Si emites esta accion, ya puedes redactar la respuesta como un cambio aplicado en la app."
+    "Si emites esta accion, ya puedes redactar la respuesta como un cambio aplicado en la app.",
+    "No escribas frases como 'accion emitida' ni expliques el JSON en el texto visible."
   ].join("\n");
 }
 
@@ -1617,8 +1625,8 @@ function addLine(lines, label, value) {
   lines.push(`${label}: ${text}`);
 }
 
-function buildGreetingInstruction() {
-  return 'Para este turno, responde exactamente asi: "¡Hola! Soy IAn, tu asistente de DomoticPet. ¿En qué te ayudo hoy?"';
+function buildGreetingInstruction(assistantDisplayName) {
+  return `Para este turno, responde exactamente asi: "Hola, soy ${assistantDisplayName}, tu asistente de DomoticPet. En que te ayudo hoy?"`;
 }
 
 function extractOutputText(response) {
